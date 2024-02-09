@@ -1,0 +1,116 @@
+from bs4 import BeautifulSoup
+import requests
+import pandas as pd
+import numpy as np
+import sqlite3
+from datetime import datetime 
+
+
+
+def extract_table(url):
+    ''' This function extracts the 
+    information from the website and saves it to a dataframe. 
+    '''
+    r = requests.get(url).text
+    soup = BeautifulSoup(r, 'html.parser')
+    table = soup.find('table', {'class': 'wikitable'})
+
+    # Extract column headers
+    headers = [header.text.strip() for header in table.find_all('th')]
+
+    # Extract rows
+    rows = []
+    for row in table.find_all('tr'):
+        row_data = [cell.text.strip() for cell in row.find_all('td')]
+        if len(row_data) > 0:
+            rows.append(row_data)
+
+    # Create DataFrame
+    df = pd.DataFrame(rows, columns=headers)
+
+    return df
+
+
+def transform(df):
+    ''' 
+    The function returns the transformed the data frame by adding columns 
+    for Market Capitalization in GBP, EUR, and INR, rounded to 2 decimal places.
+    '''
+    # Convert 'Market cap(US$ billion)' column to float
+    df['Market cap(US$ billion)'] = df['Market cap(US$ billion)'].astype(float)
+    
+    # Read exchange rates from CSV
+    csvfile = pd.read_csv("exchange_rates.csv")
+
+    # Create a dictionary for exchange rates
+    exchange_rates = csvfile.set_index('Currency')['Rate'].to_dict()
+
+    # Calculate Market Capitalization in GBP, EUR, and INR
+    df['MC_GBP_Billion'] = df['Market cap(US$ billion)'] * exchange_rates['GBP']
+    df['MC_INR_Billion'] = df['Market cap(US$ billion)'] * exchange_rates['INR']
+    df['MC_EUR_Billion'] = df['Market cap(US$ billion)'] * exchange_rates['EUR']
+
+    # Round to 2 decimal places
+    df = df.round({'MC_GBP_Billion': 2, 'MC_INR_Billion': 2, 'MC_EUR_Billion': 2})
+
+    return df
+
+def load_to_csv(df, csv_path):
+    ''' This function saves the final dataframe as a `CSV` file 
+    in the provided path. Function returns nothing.'''
+    df.to_csv(csv_path)
+
+    
+def load_to_db(df, sql_connection, table_name):
+    ''' This function saves the final dataframe as a database table
+    with the provided name. Function returns nothing.'''
+    df.to_sql(table_name, sql_connection, if_exists = 'replace', index = False)
+
+def run_query(query_statements, sql_connection):
+    ''' This function runs the stated query on the database table and
+#     prints the output on the terminal. Function returns nothing. '''
+    for query in query_statements:
+        print(query)
+        print(pd.read_sql(query, sql_connection), '\n')    
+
+def log_progress(msg):
+    ''' This function logs the mentioned message at a given stage of the 
+    code execution to a log file. Function returns nothing'''
+    timeformat = '%Y-%h-%d-%H:%M:%S'
+    now = datetime.now()
+    timestamp = now.strftime(timeformat)
+
+    with open(logfile, 'a') as f:
+        f.write(timestamp + ' : ' + msg + '\n')     
+  
+
+
+url = "https://en.wikipedia.org/wiki/List_of_largest_banks#By_market_capitalization"
+db_name = 'largest_banks.db'
+table_name = 'largest_bank_market_capitalisation'
+csv_path = 'Banks_market_capitalisation.csv'
+
+query_statements = [
+        'SELECT * FROM largest_bank_market_capitalisation',
+        'SELECT AVG(MC_GBP_Billion) FROM largest_bank_market_capitalisation',
+        'SELECT [Bank name] from largest_bank_market_capitalisation LIMIT 5'
+    ]
+
+logfile = 'code_log.txt'
+
+
+
+log_progress('Preliminaries complete. Initiating ETL process')
+df = extract_table(url)
+log_progress('Data extraction complete. Initiating Transformation process')
+df = transform(df)
+log_progress('Data transformation complete. Initiating loading process')
+load_to_csv(df, csv_path)
+log_progress('Data saved to CSV file')
+sql_connection = sqlite3.connect('largest_banks.db')
+log_progress('SQL Connection initiated.')
+load_to_db(df, sql_connection, table_name)
+log_progress('Data loaded to Database as table. Running the query')
+run_query(query_statements, sql_connection)
+log_progress('Process Complete.')
+sql_connection.close()
